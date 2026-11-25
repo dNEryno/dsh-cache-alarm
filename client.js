@@ -307,7 +307,7 @@ const core = {
         '缓存读 ' + formatTokens(usage.cacheReadTokens),
         '缓存写 ' + formatTokens(usage.cacheWriteTokens),
         '输出 ' + formatTokens(usage.outputTokens),
-        perf ? (perf.exact ? '解码 ' : '整步耗时 ') + Math.round(perf.decodeMs) + ' ms' : null,
+        perf ? (perf.exact ? '解码 ' : '整步耗时 ') + (perf.exact ? Math.round(perf.decodeMs) + ' ms' : (perf.decodeMs / 1000).toFixed(2) + ' s') : null,
         perf && perf.ttftMs !== undefined ? '首字 ' + Math.round(perf.ttftMs) + ' ms' : null,
         perf ? (perf.exact ? '真实速度 ' : '整步均速 ') + formatTps(perf.tps) : null,
       ];
@@ -324,7 +324,9 @@ const core = {
         '缓存写 ' + formatTokens(usage.cacheWriteTokens),
       ];
       if (perf) {
-        parts.push((perf.exact ? '解码 ' : '整步 ') + Math.round(perf.decodeMs) + 'ms');
+        parts.push((perf.exact ? '解码 ' : '整步 ') + (perf.exact
+          ? Math.round(perf.decodeMs) + 'ms'
+          : (perf.decodeMs / 1000).toFixed(2) + 's'));
         if (perf.ttftMs !== undefined) parts.push('首字 ' + Math.round(perf.ttftMs) + 'ms');
       }
       return parts.join(' · ');
