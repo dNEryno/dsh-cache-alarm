@@ -1,0 +1,75 @@
+# dsh-cache-alarm
+
+一个 [DeepSeek Harness](https://github.com/deepseek-ai) 客户端插件：**在每条助手回复旁显示这一轮的提示词缓存命中率、token 数与真实解码速度**，输入框上方同步显示最新一轮；鼠标悬停即可看完整明细，不用再点开官方面板。
+
+![插件在输入框上方的显示](docs/screenshots/composer.png)
+
+> 截图只包含插件自己的一行：`本轮 ● 命中 100% · 共 117K · 出 630 · 424 tok/s`
+
+## 为什么需要它
+
+正常对话里，提示词缓存命中越高，真正计费的未命中输入 token 越少，花费才越低。缓存命中一旦掉下来（换了模型、改了系统提示、上下文被重排），花费会在你毫无察觉时变高。这个插件把**每一轮**的命中率直接摆在你眼前，低了立刻能看见。
+
+## 功能
+
+- **每条回复一条消耗行**：挂在 `conversation.chat.assistant-actions`，滚动到哪一轮就显示哪一轮，数据来自该条助手消息的 durable `usage`。
+- **输入框上方实时一行**：显示最近一轮；流式输出期间用 `tokenUsage` 投影差值预览，回复落定后立刻换成该条消息的真实用量。
+- **真实每秒 token 速度**：`outputTokens / ((completedTime - firstTokenTime) / 1000)`，直接取这一条回复的 durable timing，不是官方那个平滑值。缺少首 token 时间戳时自动回退到整步/整轮均速，并在前面标「约」，绝不假装是纯解码速度。
+- **悬停即看明细**：命中率、未命中输入、缓存读、缓存写、输出、首字延迟、解码耗时、真实速度。
+- **颜色分级**：绿 ≥ 60%，黄 30%–60%，红 < 30%（红色时横幅提示「命中过低，建议换模型」）。
+- **零副作用**：不额外发请求、不注册工具、不改提示词，因此不会影响前缀缓存本身。
+
+## 安装
+
+本插件是本地目录形式的 DSH 插件。在 DeepSeek Harness 的插件管理里选择从本地目录安装，目标指向本仓库根目录（含 `package.json` 的目录）即可。
+
+安装后需要重载页面；若已启用但页面仍是旧版本，可在插件管理里先禁用再启用一次，让客户端 bundle 重新构建。
+
+## 口径
+
+命中率与官方输入框状态行一致：
+
+```
+命中率 = cacheRead / (uncachedInput + cacheRead + cacheWrite)
+```
+
+输出 token 不进分母。首轮没有可命中的前缀，属于冷启动，不做"命中差"的结论。
+
+| 颜色 | 含义 |
+|---|---|
+| 灰 | 这一轮还没有可用的 token 统计 |
+| 绿 | 命中率 ≥ 60% |
+| 黄 | 命中率 30%–60% |
+| 红 | 命中率 < 30% |
+
+## 开发
+
+```bash
+# 纯函数单测
+node --test core.test.mjs
+
+# 把 core.mjs 内联进 client.template.js，生成 client.js
+node build.mjs
+
+# 语法检查
+node --check client.js
+```
+
+- `core.mjs`：纯函数（命中率、TPS 回退、四桶归一化、格式化等），Node 与浏览器共用。
+- `client.template.js`：React 组件与 slot 注册；构建时把 `core.mjs` 去 `export` 后内联。
+- `build.mjs`：生成 `client.js`。
+- `index.js` / `cordis.patch.yml`：host 侧空实现与插件注册补丁。
+
+## 已知限制
+
+- 历史逐轮数据只来自当前会话已加载的消息；刷新后仍按消息重新计算，不做跨会话持久化。
+- 「极端低命中时发送前确认一次」尚未实现：当前只在横幅上给文字提示，不拦截发送。
+- 仅针对 DeepSeek 的 `tokenUsage` / assistant message usage 字段设计；其它 provider 若无这些字段，行会隐藏而不是显示错误数字。
+
+## 更新日志
+
+见 [CHANGELOG.md](CHANGELOG.md)。
+
+## License
+
+MIT

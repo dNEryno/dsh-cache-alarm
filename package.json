@@ -1,0 +1,26 @@
+{
+  "name": "dsh-cache-alarm",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Per-reply prompt cache hit rate and real decode speed, shown inline on every assistant message and above the composer; hover for details.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dNEryno/dsh-cache-alarm.git"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": ["index.js", "client.js", "cordis.patch.yml", "locale/*.json", "docs", "icon.svg"],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": ["@deepseek-ai/dsh-client-ui-conversation", "@deepseek-ai/dsh-client-ui-chat"]
+    }
+  }
+}
