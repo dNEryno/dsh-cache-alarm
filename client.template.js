@@ -90,7 +90,11 @@ window.__ModuleLoader__.load({
         '输出 ' + formatTokens(usage.outputTokens),
         '总计 ' + formatTokens(usage.uncachedInputTokens + usage.cacheReadTokens + usage.cacheWriteTokens + usage.outputTokens),
         perf ? (perf.exact ? '解码 ' : '整步耗时 ') + (perf.exact ? Math.round(perf.decodeMs) + ' ms' : (perf.decodeMs / 1000).toFixed(2) + ' s') : null,
-        perf && perf.ttftMs !== undefined ? '首字 ' + Math.round(perf.ttftMs) + ' ms' : null,
+        perf && perf.ttftMs !== undefined
+          ? (perf.ttftApprox === 'session' ? '首字（会话平均）'
+            : perf.ttftApprox === 'turn' ? '首字（本轮最早）' : '首字')
+            + ' ' + Math.round(perf.ttftMs) + ' ms'
+          : null,
         perf ? (perf.exact ? '真实速度 ' : '整步均速 ') + formatTps(perf.tps) : null,
       ];
       return rows.filter(Boolean).join('\n');
@@ -110,7 +114,11 @@ window.__ModuleLoader__.load({
           ? Math.round(perf.decodeMs) + 'ms'
           : (perf.decodeMs / 1000).toFixed(2) + 's'));
       }
-      parts.push('首字 ' + (perf && typeof perf.ttftMs === 'number' ? Math.round(perf.ttftMs) + 'ms' : '—'));
+      const ttft = perf && typeof perf.ttftMs === 'number'
+        ? (perf.ttftApprox === 'session' ? '均' : perf.ttftApprox === 'turn' ? '约' : '')
+          + Math.round(perf.ttftMs) + 'ms'
+        : '—';
+      parts.push('首字 ' + ttft);
       return parts.join(' · ');
     }
 
@@ -154,7 +162,9 @@ window.__ModuleLoader__.load({
       if (compact) {
         const summary = [
           '命中 ' + formatRate(rate),
-          '首字 ' + formatSeconds(perf && perf.ttftMs),
+          '首字 ' + (perf && typeof perf.ttftMs === 'number'
+            ? (perf.ttftApprox === 'session' ? '均' : perf.ttftApprox === 'turn' ? '约' : '') + formatSeconds(perf.ttftMs)
+            : '—'),
           '整步 ' + formatSeconds(perf && perf.decodeMs),
           perf ? formatTps(perf.tps) : '—',
         ].join(' · ');
@@ -226,14 +236,22 @@ window.__ModuleLoader__.load({
       const running = typeof useSession === 'function' ? useSession(state => state.running) : false;
       const latest = typeof useChat === 'function' ? useChat(s => latestSource(s)) : undefined;
       const tail = typeof useChat === 'function' ? useChat(s => tailError(s)) : undefined;
+      const nodes = typeof useChat === 'function' ? useChat(s => s.legacy?.nodes) : undefined;
       const turnTimings = typeof useChat === 'function' ? useChat(s => s.legacy?.turnTimings) : undefined;
       const usageProjection = normalizeUsage(readProjection('tokenUsage'));
+      const sessionStats = readProjection('sessionStats');
       const durable = readSource(latest);
       const model = durable.model || modelNameOf(unwrap(readProjection('modelSelection')));
       const permanent = normalizeTurnUsage(durable.usage);
-      const window = turnTimings?.get?.(turnOf(latest));
+      const turn = turnOf(latest);
+      const window = turnTimings?.get?.(turn);
+      const turnTtft = turnFirstTokenMs(nodes, turn, window);
+      const avgTtft = averageTtftMs(sessionStats);
+      const fallbackTtft = turnTtft !== undefined ? turnTtft : avgTtft;
+      const fallbackKind = turnTtft !== undefined ? 'turn' : avgTtft !== undefined ? 'session' : undefined;
       const error = tail;
-      const perf = !error && permanent ? throughput(permanent, durable.timing, window) : undefined;
+      const basePerf = !error && permanent ? throughput(permanent, durable.timing, window) : undefined;
+      const perf = !error ? withTtft(basePerf, fallbackTtft, fallbackKind) : undefined;
 
       // Delta bookkeeping for streaming turns only. It never feeds the settled
       // row: that one always comes from the durable message usage.
@@ -272,17 +290,26 @@ window.__ModuleLoader__.load({
     function MessageLine(props) {
       const useChat = props.useChat;
       if (typeof useChat !== 'function') return null;
+      const useProjection = props.useProjection;
+      const readProjection = typeof useProjection === 'function' ? useProjection : () => undefined;
       const source = useChat(s => findSource(s, props.messageId));
+      const nodes = useChat(s => s.legacy?.nodes);
       const turnTimings = useChat(s => s.legacy?.turnTimings);
       const turn = turnOf(source);
       const errorNode = useChat(s => errorForTurn(s, turn));
+      const sessionStats = readProjection('sessionStats');
       if (!source) return null;
       const error = errorNode || (isInterrupted(source) ? { kind: 'assistant', interrupted: true } : undefined);
       const durable = readSource(source);
       const usage = normalizeTurnUsage(durable.usage);
       if (!usage && !error) return null;
       const window = turnTimings?.get?.(turn);
-      const perf = error ? undefined : throughput(usage, durable.timing, window);
+      const turnTtft = turnFirstTokenMs(nodes, turn, window);
+      const avgTtft = averageTtftMs(sessionStats);
+      const fallbackTtft = turnTtft !== undefined ? turnTtft : avgTtft;
+      const fallbackKind = turnTtft !== undefined ? 'turn' : avgTtft !== undefined ? 'session' : undefined;
+      const basePerf = error ? undefined : throughput(usage, durable.timing, window);
+      const perf = error ? undefined : withTtft(basePerf, fallbackTtft, fallbackKind);
       return h(TurnLine, { usage: error ? undefined : usage, perf, model: durable.model, compact: true, error });
     }
 

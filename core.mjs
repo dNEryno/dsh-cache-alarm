@@ -141,6 +141,47 @@ function formatTps(value) {
   return (value >= 100 ? Math.round(value) : Math.round(value * 10) / 10) + ' tok/s';
 }
 
+// A loaded window can keep the final assistant message's timing without the
+// token-delta boundary, even when an earlier step of the same turn recorded
+// one. Recover the turn's earliest recorded first token relative to the turn
+// start; this turns the frequent em dash into a real reading. Returns
+// undefined when no assistant node in the turn has a first-token timestamp.
+function turnFirstTokenMs(nodes, turn, turnWindow) {
+  if (!Array.isArray(nodes) || turn === undefined) return undefined;
+  const turnStart = positive(turnWindow && turnWindow.startTime);
+  let earliest;
+  for (const node of nodes) {
+    if (!node || node.kind !== 'assistant' || node.turn !== turn) continue;
+    const timing = node.timing;
+    const first = positive(timing && timing.firstTokenTime);
+    if (first === undefined) continue;
+    const base = turnStart ?? positive(timing.stepStartTime);
+    if (base === undefined || first < base) continue;
+    const value = first - base;
+    if (earliest === undefined || value < earliest) earliest = value;
+  }
+  return earliest;
+}
+
+// Whole-log average TTFT from the sessionStats projection: the last fallback
+// when no per-turn first-token boundary survives in the loaded window.
+function averageTtftMs(raw) {
+  const stats = unwrap(raw);
+  if (!stats || typeof stats !== 'object') return undefined;
+  const steps = count(stats.ttftSteps);
+  if (steps <= 0) return undefined;
+  return count(stats.ttftMs) / steps;
+}
+
+// Keep an existing exact TTFT; otherwise attach the recovered one and record
+// how it was obtained so the UI can label it instead of implying exactness.
+function withTtft(perf, ttftMs, kind) {
+  if (!perf || typeof perf !== 'object') return perf;
+  if (typeof perf.ttftMs === 'number') return perf;
+  if (typeof ttftMs !== 'number' || !Number.isFinite(ttftMs) || ttftMs < 0) return perf;
+  return { ...perf, ttftMs, ttftApprox: kind };
+}
+
 function formatSeconds(ms) {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '—';
   return (ms / 1000).toFixed(2) + 's';
@@ -280,7 +321,8 @@ function formatUsd(usd) {
 
 export const core = {
   PRICES, isPeakTime, priceFamily, modelNameOf, normalizeUsage, normalizeTurnUsage, hitRate,
-  throughput, formatTps, formatSeconds, sumUsage, subtractUsage, classify, wastedUsd, isEvidence,
+  throughput, formatTps, formatSeconds, turnFirstTokenMs, averageTtftMs, withTtft,
+  sumUsage, subtractUsage, classify, wastedUsd, isEvidence,
   formatTokens, formatRate, formatUsd, unwrap,
   isInterrupted, errorForTurn, tailError, errorLabel, errorDetail,
 };

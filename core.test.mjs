@@ -6,6 +6,7 @@ const {
   hitRate, normalizeUsage, normalizeTurnUsage, throughput, formatTps, subtractUsage,
   classify, wastedUsd, isEvidence, formatRate, formatUsd, isPeakTime, modelNameOf,
   isInterrupted, errorForTurn, tailError, errorLabel, errorDetail, formatSeconds,
+  turnFirstTokenMs, averageTtftMs, withTtft,
 } = core;
 
 test('hitRate divides cache reads by the whole billed prompt', () => {
@@ -62,6 +63,32 @@ test('throughput survives a missing first-token timestamp', () => {
     { startTime: 1000, endTime: 6000 });
   assert.equal(turnOnly.tps, 100);
   assert.equal(throughput(usage, { stepStartTime: null, firstTokenTime: null, completedTime: 6000 }, undefined), undefined);
+});
+
+test('turnFirstTokenMs recovers a first token when the final step lacks one', () => {
+  const nodes = [
+    { kind: 'assistant', turn: 2, timing: { stepStartTime: 1000, firstTokenTime: 1600, completedTime: 5000 } },
+    { kind: 'assistant', turn: 2, timing: { stepStartTime: 5000, firstTokenTime: null, completedTime: 8000 } },
+    { kind: 'assistant', turn: 3, timing: { stepStartTime: 9000, firstTokenTime: 9500, completedTime: 10000 } },
+  ];
+  assert.equal(turnFirstTokenMs(nodes, 2, { startTime: 900, endTime: 8000 }), 700);
+  assert.equal(turnFirstTokenMs(nodes, 2, undefined), 600);
+  assert.equal(turnFirstTokenMs(nodes, 4, undefined), undefined);
+  assert.equal(turnFirstTokenMs(undefined, 2, undefined), undefined);
+});
+
+test('averageTtftMs falls back to the whole-log average only with counted steps', () => {
+  assert.equal(averageTtftMs({ ttftMs: 1500, ttftSteps: 3 }), 500);
+  assert.equal(averageTtftMs({ value: { ttftMs: 900, ttftSteps: 2 } }), 450);
+  assert.equal(averageTtftMs({ ttftMs: 0, ttftSteps: 0 }), undefined);
+  assert.equal(averageTtftMs(undefined), undefined);
+});
+
+test('withTtft only fills an absent reading and marks how it was recovered', () => {
+  const perf = { tps: 100, decodeMs: 1000, exact: true };
+  assert.deepEqual(withTtft(perf, 500, 'turn'), { tps: 100, decodeMs: 1000, exact: true, ttftMs: 500, ttftApprox: 'turn' });
+  assert.equal(withTtft({ ...perf, ttftMs: 300 }, 500, 'turn').ttftMs, 300);
+  assert.equal(withTtft(undefined, 500, 'turn'), undefined);
 });
 
 test('subtractUsage measures one turn and rejects a backwards sample', () => {

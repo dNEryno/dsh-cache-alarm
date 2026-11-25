@@ -147,6 +147,47 @@ function formatTps(value) {
   return (value >= 100 ? Math.round(value) : Math.round(value * 10) / 10) + ' tok/s';
 }
 
+// A loaded window can keep the final assistant message's timing without the
+// token-delta boundary, even when an earlier step of the same turn recorded
+// one. Recover the turn's earliest recorded first token relative to the turn
+// start; this turns the frequent em dash into a real reading. Returns
+// undefined when no assistant node in the turn has a first-token timestamp.
+function turnFirstTokenMs(nodes, turn, turnWindow) {
+  if (!Array.isArray(nodes) || turn === undefined) return undefined;
+  const turnStart = positive(turnWindow && turnWindow.startTime);
+  let earliest;
+  for (const node of nodes) {
+    if (!node || node.kind !== 'assistant' || node.turn !== turn) continue;
+    const timing = node.timing;
+    const first = positive(timing && timing.firstTokenTime);
+    if (first === undefined) continue;
+    const base = turnStart ?? positive(timing.stepStartTime);
+    if (base === undefined || first < base) continue;
+    const value = first - base;
+    if (earliest === undefined || value < earliest) earliest = value;
+  }
+  return earliest;
+}
+
+// Whole-log average TTFT from the sessionStats projection: the last fallback
+// when no per-turn first-token boundary survives in the loaded window.
+function averageTtftMs(raw) {
+  const stats = unwrap(raw);
+  if (!stats || typeof stats !== 'object') return undefined;
+  const steps = count(stats.ttftSteps);
+  if (steps <= 0) return undefined;
+  return count(stats.ttftMs) / steps;
+}
+
+// Keep an existing exact TTFT; otherwise attach the recovered one and record
+// how it was obtained so the UI can label it instead of implying exactness.
+function withTtft(perf, ttftMs, kind) {
+  if (!perf || typeof perf !== 'object') return perf;
+  if (typeof perf.ttftMs === 'number') return perf;
+  if (typeof ttftMs !== 'number' || !Number.isFinite(ttftMs) || ttftMs < 0) return perf;
+  return { ...perf, ttftMs, ttftApprox: kind };
+}
+
 function formatSeconds(ms) {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '—';
   return (ms / 1000).toFixed(2) + 's';
@@ -286,7 +327,8 @@ function formatUsd(usd) {
 
 const core = {
   PRICES, isPeakTime, priceFamily, modelNameOf, normalizeUsage, normalizeTurnUsage, hitRate,
-  throughput, formatTps, formatSeconds, sumUsage, subtractUsage, classify, wastedUsd, isEvidence,
+  throughput, formatTps, formatSeconds, turnFirstTokenMs, averageTtftMs, withTtft,
+  sumUsage, subtractUsage, classify, wastedUsd, isEvidence,
   formatTokens, formatRate, formatUsd, unwrap,
   isInterrupted, errorForTurn, tailError, errorLabel, errorDetail,
 };
@@ -375,7 +417,11 @@ const core = {
         '输出 ' + formatTokens(usage.outputTokens),
         '总计 ' + formatTokens(usage.uncachedInputTokens + usage.cacheReadTokens + usage.cacheWriteTokens + usage.outputTokens),
         perf ? (perf.exact ? '解码 ' : '整步耗时 ') + (perf.exact ? Math.round(perf.decodeMs) + ' ms' : (perf.decodeMs / 1000).toFixed(2) + ' s') : null,
-        perf && perf.ttftMs !== undefined ? '首字 ' + Math.round(perf.ttftMs) + ' ms' : null,
+        perf && perf.ttftMs !== undefined
+          ? (perf.ttftApprox === 'session' ? '首字（会话平均）'
+            : perf.ttftApprox === 'turn' ? '首字（本轮最早）' : '首字')
+            + ' ' + Math.round(perf.ttftMs) + ' ms'
+          : null,
         perf ? (perf.exact ? '真实速度 ' : '整步均速 ') + formatTps(perf.tps) : null,
       ];
       return rows.filter(Boolean).join('\n');
@@ -395,7 +441,11 @@ const core = {
           ? Math.round(perf.decodeMs) + 'ms'
           : (perf.decodeMs / 1000).toFixed(2) + 's'));
       }
-      parts.push('首字 ' + (perf && typeof perf.ttftMs === 'number' ? Math.round(perf.ttftMs) + 'ms' : '—'));
+      const ttft = perf && typeof perf.ttftMs === 'number'
+        ? (perf.ttftApprox === 'session' ? '均' : perf.ttftApprox === 'turn' ? '约' : '')
+          + Math.round(perf.ttftMs) + 'ms'
+        : '—';
+      parts.push('首字 ' + ttft);
       return parts.join(' · ');
     }
 
@@ -439,7 +489,9 @@ const core = {
       if (compact) {
         const summary = [
           '命中 ' + formatRate(rate),
-          '首字 ' + formatSeconds(perf && perf.ttftMs),
+          '首字 ' + (perf && typeof perf.ttftMs === 'number'
+            ? (perf.ttftApprox === 'session' ? '均' : perf.ttftApprox === 'turn' ? '约' : '') + formatSeconds(perf.ttftMs)
+            : '—'),
           '整步 ' + formatSeconds(perf && perf.decodeMs),
           perf ? formatTps(perf.tps) : '—',
         ].join(' · ');
@@ -511,14 +563,22 @@ const core = {
       const running = typeof useSession === 'function' ? useSession(state => state.running) : false;
       const latest = typeof useChat === 'function' ? useChat(s => latestSource(s)) : undefined;
       const tail = typeof useChat === 'function' ? useChat(s => tailError(s)) : undefined;
+      const nodes = typeof useChat === 'function' ? useChat(s => s.legacy?.nodes) : undefined;
       const turnTimings = typeof useChat === 'function' ? useChat(s => s.legacy?.turnTimings) : undefined;
       const usageProjection = normalizeUsage(readProjection('tokenUsage'));
+      const sessionStats = readProjection('sessionStats');
       const durable = readSource(latest);
       const model = durable.model || modelNameOf(unwrap(readProjection('modelSelection')));
       const permanent = normalizeTurnUsage(durable.usage);
-      const window = turnTimings?.get?.(turnOf(latest));
+      const turn = turnOf(latest);
+      const window = turnTimings?.get?.(turn);
+      const turnTtft = turnFirstTokenMs(nodes, turn, window);
+      const avgTtft = averageTtftMs(sessionStats);
+      const fallbackTtft = turnTtft !== undefined ? turnTtft : avgTtft;
+      const fallbackKind = turnTtft !== undefined ? 'turn' : avgTtft !== undefined ? 'session' : undefined;
       const error = tail;
-      const perf = !error && permanent ? throughput(permanent, durable.timing, window) : undefined;
+      const basePerf = !error && permanent ? throughput(permanent, durable.timing, window) : undefined;
+      const perf = !error ? withTtft(basePerf, fallbackTtft, fallbackKind) : undefined;
 
       // Delta bookkeeping for streaming turns only. It never feeds the settled
       // row: that one always comes from the durable message usage.
@@ -557,17 +617,26 @@ const core = {
     function MessageLine(props) {
       const useChat = props.useChat;
       if (typeof useChat !== 'function') return null;
+      const useProjection = props.useProjection;
+      const readProjection = typeof useProjection === 'function' ? useProjection : () => undefined;
       const source = useChat(s => findSource(s, props.messageId));
+      const nodes = useChat(s => s.legacy?.nodes);
       const turnTimings = useChat(s => s.legacy?.turnTimings);
       const turn = turnOf(source);
       const errorNode = useChat(s => errorForTurn(s, turn));
+      const sessionStats = readProjection('sessionStats');
       if (!source) return null;
       const error = errorNode || (isInterrupted(source) ? { kind: 'assistant', interrupted: true } : undefined);
       const durable = readSource(source);
       const usage = normalizeTurnUsage(durable.usage);
       if (!usage && !error) return null;
       const window = turnTimings?.get?.(turn);
-      const perf = error ? undefined : throughput(usage, durable.timing, window);
+      const turnTtft = turnFirstTokenMs(nodes, turn, window);
+      const avgTtft = averageTtftMs(sessionStats);
+      const fallbackTtft = turnTtft !== undefined ? turnTtft : avgTtft;
+      const fallbackKind = turnTtft !== undefined ? 'turn' : avgTtft !== undefined ? 'session' : undefined;
+      const basePerf = error ? undefined : throughput(usage, durable.timing, window);
+      const perf = error ? undefined : withTtft(basePerf, fallbackTtft, fallbackKind);
       return h(TurnLine, { usage: error ? undefined : usage, perf, model: durable.model, compact: true, error });
     }
 
