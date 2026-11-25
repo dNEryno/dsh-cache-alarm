@@ -95,8 +95,25 @@ window.__ModuleLoader__.load({
       return rows.filter(Boolean).join('\n');
     }
 
-    // One compact row, reused by the composer (latest turn) and by the chat
-    // action slot (the turn owning that assistant message).
+    // The second line is always rendered: the user asked not to have to hover
+    // for the detail numbers.
+    function detailParts(usage, perf) {
+      if (!usage) return '';
+      const parts = [
+        '未命中 ' + formatTokens(usage.uncachedInputTokens),
+        '缓存读 ' + formatTokens(usage.cacheReadTokens),
+        '缓存写 ' + formatTokens(usage.cacheWriteTokens),
+      ];
+      if (perf) {
+        parts.push((perf.exact ? '解码 ' : '整步 ') + Math.round(perf.decodeMs) + 'ms');
+        if (perf.ttftMs !== undefined) parts.push('首字 ' + Math.round(perf.ttftMs) + 'ms');
+      }
+      return parts.join(' · ');
+    }
+
+    // One compact block, reused by the composer (latest turn) and by the chat
+    // action slot (the turn owning that assistant message). The summary stays
+    // on the first line; the per-bucket detail is always on the second.
     function TurnLine({ usage, perf, model, compact }) {
       const rate = hitRate(usage);
       const tone = classify(rate);
@@ -111,18 +128,28 @@ window.__ModuleLoader__.load({
       return h('span', {
         title: detailTitle(usage, perf, rate, model),
         style: {
-          display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: '100%',
-          padding: compact ? '0' : '2px 4px', fontSize: compact ? 11 : 12, lineHeight: '16px',
-          color: 'inherit', opacity: 0.9, whiteSpace: 'nowrap', cursor: 'help',
+          display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 1,
+          maxWidth: '100%', padding: compact ? '0' : '2px 4px',
+          fontSize: compact ? 11 : 12, lineHeight: '16px', color: 'inherit', opacity: 0.9,
+          whiteSpace: 'normal',
         },
       },
-        h('span', {
-          'aria-hidden': true,
-          style: { width: 7, height: 7, borderRadius: 4, flex: '0 0 auto', background: TONES[tone] },
-        }),
-        h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis' } }, label),
-        tone === 'danger' && !compact
-          ? h('span', { style: { color: TONES.danger } }, '命中过低，建议换模型') : null);
+        h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: '100%' } },
+          h('span', {
+            'aria-hidden': true,
+            style: { width: 7, height: 7, borderRadius: 4, flex: '0 0 auto', background: TONES[tone] },
+          }),
+          h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, label),
+          tone === 'danger' && !compact
+            ? h('span', { style: { color: TONES.danger } }, '命中过低，建议换模型') : null),
+        usage
+          ? h('span', {
+            style: {
+              fontSize: compact ? 10 : 11, lineHeight: '14px', opacity: 0.68,
+              paddingLeft: 13, whiteSpace: 'normal',
+            },
+          }, detailParts(usage, perf))
+          : null);
     }
 
     // Session-cumulative projection: used only while the current turn streams,

@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Cache hit & speed",
-    "description": "Shows each reply's prompt cache hit rate, token counts and real decode speed (tok/s) inline, plus the latest turn above the composer; hover for details.",
+    "description": "Shows each reply's prompt cache hit rate, token counts and real decode speed (tok/s) inline, plus the latest turn above the composer; the per-bucket details are always visible, no hover needed.",
     "detail": "docs/DETAIL.md"
   }
 }
