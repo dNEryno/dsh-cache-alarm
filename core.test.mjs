@@ -5,6 +5,7 @@ import { core } from './core.mjs';
 const {
   hitRate, normalizeUsage, normalizeTurnUsage, throughput, formatTps, subtractUsage,
   classify, wastedUsd, isEvidence, formatRate, formatUsd, isPeakTime, modelNameOf,
+  isInterrupted, errorForTurn, tailError, errorLabel, errorDetail,
 } = core;
 
 test('hitRate divides cache reads by the whole billed prompt', () => {
@@ -74,9 +75,12 @@ test('subtractUsage measures one turn and rejects a backwards sample', () => {
   assert.equal(subtractUsage({ uncachedInputTokens: 1 }, { uncachedInputTokens: 5 }), undefined);
 });
 
-test('classify uses the warn and danger cut points', () => {
+test('classify uses the 90/80 cut points', () => {
   assert.equal(classify(0.9), 'ok');
-  assert.equal(classify(0.5), 'warn');
+  assert.equal(classify(0.95), 'ok');
+  assert.equal(classify(0.85), 'warn');
+  assert.equal(classify(0.8), 'warn');
+  assert.equal(classify(0.79), 'danger');
   assert.equal(classify(0.1), 'danger');
   assert.equal(classify(undefined), 'unknown');
   assert.equal(classify(0.5, { warn: 0.4, danger: 0.2 }), 'ok');
@@ -133,4 +137,48 @@ test('an unreadable model still yields a Flash-priced waste figure', () => {
   const usage = { uncachedInputTokens: 1e6, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 };
   assert.equal(wastedUsd(usage, '', Date.UTC(2026, 10, 25, 2, 0)), undefined);
   assert.ok(wastedUsd(usage, 'flash', Date.UTC(2026, 10, 25, 2, 0)).usd > 0);
+});
+
+test('a turn error or interrupted assistant maps to the red cross', () => {
+  const snapshot = {
+    legacy: {
+      nodes: [
+        { kind: 'user', turn: 1 },
+        { kind: 'assistant', turn: 1, messageId: 'm1', usage: { inputTokens: 100, outputTokens: 5 } },
+        { kind: 'turn-error', turn: 1, message: 'provider disconnected', code: 'ETIMEDOUT' },
+      ],
+    },
+  };
+  assert.equal(errorForTurn(snapshot, 1)?.message, 'provider disconnected');
+  assert.equal(tailError(snapshot)?.kind, 'turn-error');
+  assert.equal(errorLabel(tailError(snapshot)), '请求失败');
+  assert.equal(errorDetail(tailError(snapshot)), 'provider disconnected');
+  assert.equal(isInterrupted({ kind: 'assistant', interrupted: true }), true);
+  assert.equal(isInterrupted({ kind: 'assistant' }), false);
+});
+
+test('tailError ignores an old error once the next user turn starts', () => {
+  const snapshot = {
+    legacy: {
+      nodes: [
+        { kind: 'turn-error', turn: 1, message: 'old failure' },
+        { kind: 'user', turn: 2 },
+      ],
+    },
+  };
+  assert.equal(tailError(snapshot), undefined);
+});
+
+test('a settled assistant after a retry is not an error', () => {
+  const snapshot = {
+    legacy: {
+      nodes: [
+        { kind: 'model-retry', turn: 1, retryState: 'started', failure: { message: 'timeout' } },
+        { kind: 'assistant', turn: 1, messageId: 'm1' },
+      ],
+    },
+  };
+  assert.equal(tailError(snapshot), undefined);
+  assert.equal(errorLabel({ kind: 'model-retry', retryState: 'scheduled', failure: { message: 'x' } }), '模型请求失败，重试中');
+  assert.equal(errorDetail({ kind: 'model-retry', retryState: 'scheduled', failure: { message: 'x' } }), 'x');
 });

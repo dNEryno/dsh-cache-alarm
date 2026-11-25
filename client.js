@@ -147,6 +147,66 @@ function formatTps(value) {
   return (value >= 100 ? Math.round(value) : Math.round(value * 10) / 10) + ' tok/s';
 }
 
+// A failed or stopped turn publishes either a TurnErrorNode or an
+// interruption-frozen Assistant prefix. Both get the red cross instead of a
+// hit-rate reading, because there is no valid usage to grade.
+function isInterrupted(source) {
+  if (!source) return false;
+  if (source.interrupted === true) return true;
+  const finalNode = source.kind === 'turn-tail' ? source.data?.closing?.finalNode : source.finalNode;
+  return finalNode?.interrupted === true;
+}
+
+function errorForTurn(snapshot, turn) {
+  if (turn === undefined) return undefined;
+  const nodes = snapshot?.legacy?.nodes;
+  if (!Array.isArray(nodes)) return undefined;
+  for (const node of nodes) {
+    if (node && node.kind === 'turn-error' && node.turn === turn) return node;
+  }
+  return undefined;
+}
+
+// The composer shows the newest turn, so only a terminal error after the
+// latest user message counts. A settled assistant row means the turn
+// succeeded even if earlier attempts needed a retry.
+function tailError(snapshot) {
+  const nodes = snapshot?.legacy?.nodes;
+  if (!Array.isArray(nodes)) return undefined;
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const node = nodes[i];
+    if (!node) continue;
+    if (node.kind === 'user' || node.kind === 'steering') return undefined;
+    if (node.kind === 'turn-error') return node;
+    if (node.kind === 'turn-max-tokens') return undefined;
+    if (node.kind === 'assistant') return node.interrupted ? node : undefined;
+    if (node.kind === 'model-retry' && (node.retryState === 'scheduled' || node.retryState === 'cancelled')) {
+      return node;
+    }
+  }
+  return undefined;
+}
+
+function errorLabel(error) {
+  if (!error) return '';
+  if (error.kind === 'model-retry') {
+    return error.retryState === 'cancelled' ? '重试已取消' : '模型请求失败，重试中';
+  }
+  if (error.kind === 'assistant') return '已中断';
+  if (error.code === 'INTERRUPTED') return '已中断';
+  if (error.code === 'ACCOUNT_SIGNED_OUT') return '登录已失效';
+  return '请求失败';
+}
+
+function errorDetail(error) {
+  if (!error) return '';
+  if (error.kind === 'model-retry') {
+    const failure = error.failure || {};
+    return failure.message || failure.code || '模型请求失败';
+  }
+  return error.message || error.code || '模型未返回结果';
+}
+
 function sumUsage(list) {
   const total = { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
   for (const item of list || []) {
@@ -172,8 +232,8 @@ function subtractUsage(after, before) {
 
 function classify(rate, thresholds) {
   if (rate === undefined || rate === null) return 'unknown';
-  const warn = thresholds?.warn ?? 0.6;
-  const danger = thresholds?.danger ?? 0.3;
+  const warn = thresholds?.warn ?? 0.9;
+  const danger = thresholds?.danger ?? 0.8;
   if (rate < danger) return 'danger';
   if (rate < warn) return 'warn';
   return 'ok';
@@ -223,6 +283,7 @@ const core = {
   PRICES, isPeakTime, priceFamily, modelNameOf, normalizeUsage, normalizeTurnUsage, hitRate,
   throughput, formatTps, sumUsage, subtractUsage, classify, wastedUsd, isEvidence,
   formatTokens, formatRate, formatUsd, unwrap,
+  isInterrupted, errorForTurn, tailError, errorLabel, errorDetail,
 };
 
     const TONES = { ok: '#29ad73', warn: '#e4ae28', danger: '#e44f59', unknown: '#9299a5' };
@@ -335,7 +396,38 @@ const core = {
     // One compact block, reused by the composer (latest turn) and by the chat
     // action slot (the turn owning that assistant message). The summary stays
     // on the first line; the per-bucket detail is always on the second.
-    function TurnLine({ usage, perf, model, compact }) {
+    function TurnLine({ usage, perf, model, compact, error }) {
+      if (error) {
+        const detail = errorDetail(error);
+        return h('span', {
+          title: detail,
+          style: {
+            display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: 1,
+            maxWidth: '100%', padding: compact ? '0' : '2px 4px',
+            fontSize: compact ? 11 : 12, lineHeight: '16px', color: 'inherit', opacity: 0.9,
+            whiteSpace: 'normal',
+          },
+        },
+          h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: '100%' } },
+            h('span', {
+              'aria-hidden': true,
+              style: {
+                color: TONES.danger, fontWeight: 700, flex: '0 0 auto',
+                fontSize: compact ? 12 : 13, lineHeight: '16px',
+              },
+            }, '✕'),
+            h('span', {
+              style: { color: TONES.danger, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+            }, errorLabel(error))),
+          detail
+            ? h('span', {
+              style: {
+                fontSize: compact ? 10 : 11, lineHeight: '14px', opacity: 0.68,
+                paddingLeft: 13, whiteSpace: 'normal',
+              },
+            }, detail)
+            : null);
+      }
       const rate = hitRate(usage);
       const tone = classify(rate);
       const parts = [];
@@ -391,13 +483,15 @@ const core = {
       const readProjection = typeof useProjection === 'function' ? useProjection : () => undefined;
       const running = typeof useSession === 'function' ? useSession(state => state.running) : false;
       const latest = typeof useChat === 'function' ? useChat(s => latestSource(s)) : undefined;
+      const tail = typeof useChat === 'function' ? useChat(s => tailError(s)) : undefined;
       const turnTimings = typeof useChat === 'function' ? useChat(s => s.legacy?.turnTimings) : undefined;
       const usageProjection = normalizeUsage(readProjection('tokenUsage'));
       const durable = readSource(latest);
       const model = durable.model || modelNameOf(unwrap(readProjection('modelSelection')));
       const permanent = normalizeTurnUsage(durable.usage);
       const window = turnTimings?.get?.(turnOf(latest));
-      const perf = permanent ? throughput(permanent, durable.timing, window) : undefined;
+      const error = tail;
+      const perf = !error && permanent ? throughput(permanent, durable.timing, window) : undefined;
 
       // Delta bookkeeping for streaming turns only. It never feeds the settled
       // row: that one always comes from the durable message usage.
@@ -421,8 +515,8 @@ const core = {
 
       const live = running ? (usageProjection && store.base
         ? subtractUsage(usageProjection, store.base) : undefined) : undefined;
-      const usage = permanent ?? (live && (live.uncachedInputTokens || live.cacheReadTokens || live.outputTokens)
-        ? live : undefined);
+      const usage = error ? undefined : (permanent ?? (live && (live.uncachedInputTokens || live.cacheReadTokens || live.outputTokens)
+        ? live : undefined));
       return h('div', {
         style: {
           display: 'flex', alignItems: 'center', gap: 8, padding: '2px 2px 2px 0',
@@ -430,7 +524,7 @@ const core = {
         },
       },
         h('span', { style: { fontWeight: 600, flex: '0 0 auto' } }, '本轮'),
-        h(TurnLine, { usage, perf, model }));
+        h(TurnLine, { usage, perf, model, error }));
     }
 
     function MessageLine(props) {
@@ -438,13 +532,16 @@ const core = {
       if (typeof useChat !== 'function') return null;
       const source = useChat(s => findSource(s, props.messageId));
       const turnTimings = useChat(s => s.legacy?.turnTimings);
+      const turn = turnOf(source);
+      const errorNode = useChat(s => errorForTurn(s, turn));
       if (!source) return null;
+      const error = errorNode || (isInterrupted(source) ? { kind: 'assistant', interrupted: true } : undefined);
       const durable = readSource(source);
       const usage = normalizeTurnUsage(durable.usage);
-      if (!usage) return null;
-      const window = turnTimings?.get?.(turnOf(source));
-      const perf = throughput(usage, durable.timing, window);
-      return h(TurnLine, { usage, perf, model: durable.model, compact: true });
+      if (!usage && !error) return null;
+      const window = turnTimings?.get?.(turn);
+      const perf = error ? undefined : throughput(usage, durable.timing, window);
+      return h(TurnLine, { usage: error ? undefined : usage, perf, model: durable.model, compact: true, error });
     }
 
     return {
