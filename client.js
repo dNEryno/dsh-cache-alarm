@@ -402,7 +402,7 @@ const core = {
     // One compact block, reused by the composer (latest turn) and by the chat
     // action slot (the turn owning that assistant message). The summary stays
     // on the first line; the per-bucket detail is always on the second.
-    function TurnLine({ usage, perf, model, compact, error }) {
+    function TurnLine({ usage, perf, model, compact, error, size }) {
       if (error) {
         const detail = errorDetail(error);
         return h('span', {
@@ -447,7 +447,8 @@ const core = {
           title: detailTitle(usage, perf, rate, model),
           style: {
             display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: '100%',
-            fontSize: 11, lineHeight: '16px', color: 'inherit', opacity: 0.9, whiteSpace: 'nowrap',
+            fontSize: size ?? 11, lineHeight: (size ?? 11) >= 12 ? '18px' : '16px',
+            color: 'inherit', opacity: 0.9, whiteSpace: 'nowrap',
           },
         },
           h('span', {
@@ -550,7 +551,7 @@ const core = {
         },
       },
         h('span', { style: { fontWeight: 600, flex: '0 0 auto' } }, '本轮'),
-        h(TurnLine, { usage, perf, model, error, compact: true }));
+        h(TurnLine, { usage, perf, model, error, compact: true, size: 12 }));
     }
 
     function MessageLine(props) {
