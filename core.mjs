@@ -141,6 +141,11 @@ function formatTps(value) {
   return (value >= 100 ? Math.round(value) : Math.round(value * 10) / 10) + ' tok/s';
 }
 
+function formatSeconds(ms) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '—';
+  return (ms / 1000).toFixed(2) + 's';
+}
+
 // A failed or stopped turn publishes either a TurnErrorNode or an
 // interruption-frozen Assistant prefix. Both get the red cross instead of a
 // hit-rate reading, because there is no valid usage to grade.
@@ -275,7 +280,7 @@ function formatUsd(usd) {
 
 export const core = {
   PRICES, isPeakTime, priceFamily, modelNameOf, normalizeUsage, normalizeTurnUsage, hitRate,
-  throughput, formatTps, sumUsage, subtractUsage, classify, wastedUsd, isEvidence,
+  throughput, formatTps, formatSeconds, sumUsage, subtractUsage, classify, wastedUsd, isEvidence,
   formatTokens, formatRate, formatUsd, unwrap,
   isInterrupted, errorForTurn, tailError, errorLabel, errorDetail,
 };

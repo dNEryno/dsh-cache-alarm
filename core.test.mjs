@@ -5,7 +5,7 @@ import { core } from './core.mjs';
 const {
   hitRate, normalizeUsage, normalizeTurnUsage, throughput, formatTps, subtractUsage,
   classify, wastedUsd, isEvidence, formatRate, formatUsd, isPeakTime, modelNameOf,
-  isInterrupted, errorForTurn, tailError, errorLabel, errorDetail,
+  isInterrupted, errorForTurn, tailError, errorLabel, errorDetail, formatSeconds,
 } = core;
 
 test('hitRate divides cache reads by the whole billed prompt', () => {
@@ -123,6 +123,9 @@ test('formatters stay readable', () => {
   assert.equal(formatUsd(0.00042), '$0.0004');
   assert.equal(formatUsd(0), '$0');
   assert.equal(formatUsd(undefined), '');
+  assert.equal(formatSeconds(5260), '5.26s');
+  assert.equal(formatSeconds(397), '0.40s');
+  assert.equal(formatSeconds(undefined), '—');
 });
 
 test('modelNameOf reads the common selection shapes', () => {

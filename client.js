@@ -147,6 +147,11 @@ function formatTps(value) {
   return (value >= 100 ? Math.round(value) : Math.round(value * 10) / 10) + ' tok/s';
 }
 
+function formatSeconds(ms) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '—';
+  return (ms / 1000).toFixed(2) + 's';
+}
+
 // A failed or stopped turn publishes either a TurnErrorNode or an
 // interruption-frozen Assistant prefix. Both get the red cross instead of a
 // hit-rate reading, because there is no valid usage to grade.
@@ -281,7 +286,7 @@ function formatUsd(usd) {
 
 const core = {
   PRICES, isPeakTime, priceFamily, modelNameOf, normalizeUsage, normalizeTurnUsage, hitRate,
-  throughput, formatTps, sumUsage, subtractUsage, classify, wastedUsd, isEvidence,
+  throughput, formatTps, formatSeconds, sumUsage, subtractUsage, classify, wastedUsd, isEvidence,
   formatTokens, formatRate, formatUsd, unwrap,
   isInterrupted, errorForTurn, tailError, errorLabel, errorDetail,
 };
@@ -368,6 +373,7 @@ const core = {
         '缓存读 ' + formatTokens(usage.cacheReadTokens),
         '缓存写 ' + formatTokens(usage.cacheWriteTokens),
         '输出 ' + formatTokens(usage.outputTokens),
+        '总计 ' + formatTokens(usage.uncachedInputTokens + usage.cacheReadTokens + usage.cacheWriteTokens + usage.outputTokens),
         perf ? (perf.exact ? '解码 ' : '整步耗时 ') + (perf.exact ? Math.round(perf.decodeMs) + ' ms' : (perf.decodeMs / 1000).toFixed(2) + ' s') : null,
         perf && perf.ttftMs !== undefined ? '首字 ' + Math.round(perf.ttftMs) + ' ms' : null,
         perf ? (perf.exact ? '真实速度 ' : '整步均速 ') + formatTps(perf.tps) : null,
@@ -388,8 +394,8 @@ const core = {
         parts.push((perf.exact ? '解码 ' : '整步 ') + (perf.exact
           ? Math.round(perf.decodeMs) + 'ms'
           : (perf.decodeMs / 1000).toFixed(2) + 's'));
-        if (perf.ttftMs !== undefined) parts.push('首字 ' + Math.round(perf.ttftMs) + 'ms');
       }
+      parts.push('首字 ' + (perf && typeof perf.ttftMs === 'number' ? Math.round(perf.ttftMs) + 'ms' : '—'));
       return parts.join(' · ');
     }
 
@@ -419,7 +425,7 @@ const core = {
             h('span', {
               style: { color: TONES.danger, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
             }, errorLabel(error))),
-          detail
+          detail && !compact
             ? h('span', {
               style: {
                 fontSize: compact ? 10 : 11, lineHeight: '14px', opacity: 0.68,
@@ -430,6 +436,26 @@ const core = {
       }
       const rate = hitRate(usage);
       const tone = classify(rate);
+      if (compact) {
+        const summary = [
+          '命中 ' + formatRate(rate),
+          '首字 ' + formatSeconds(perf && perf.ttftMs),
+          '整步 ' + formatSeconds(perf && perf.decodeMs),
+          perf ? formatTps(perf.tps) : '—',
+        ].join(' · ');
+        return h('span', {
+          title: detailTitle(usage, perf, rate, model),
+          style: {
+            display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: '100%',
+            fontSize: 11, lineHeight: '16px', color: 'inherit', opacity: 0.9, whiteSpace: 'nowrap',
+          },
+        },
+          h('span', {
+            'aria-hidden': true,
+            style: { width: 7, height: 7, borderRadius: 4, flex: '0 0 auto', background: TONES[tone] },
+          }),
+          h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis' } }, summary));
+      }
       const parts = [];
       if (usage) parts.push('命中 ' + formatRate(rate));
       const total = usage
