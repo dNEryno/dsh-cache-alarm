@@ -550,7 +550,7 @@ const core = {
         },
       },
         h('span', { style: { fontWeight: 600, flex: '0 0 auto' } }, '本轮'),
-        h(TurnLine, { usage, perf, model, error }));
+        h(TurnLine, { usage, perf, model, error, compact: true }));
     }
 
     function MessageLine(props) {
