@@ -1,6 +1,6 @@
 {
   "name": "dsh-cache-alarm",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "type": "module",
   "description": "Per-reply prompt cache hit rate and real decode speed, shown inline on every assistant message and above the composer; hover for details.",
   "license": "MIT",

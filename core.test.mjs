@@ -4,9 +4,10 @@ import { core } from './core.mjs';
 
 const {
   hitRate, normalizeUsage, normalizeTurnUsage, throughput, formatTps, subtractUsage,
-  classify, wastedUsd, isEvidence, formatRate, formatUsd, isPeakTime, modelNameOf,
+  classify, wastedUsd, isEvidence, formatRate, formatUsd, isPeakTime, modelNameOf, usageOfTurn,
   isInterrupted, errorForTurn, tailError, errorLabel, errorDetail, formatSeconds,
-  turnFirstTokenMs, averageTtftMs, withTtft,
+  formatDuration, turnDurationMs,
+  turnFirstTokenMs, averageTtftMs, withTtft, isTokenDelta, runFirstTokenTime, assistantStreamFirstTokenTime,
 } = core;
 
 test('hitRate divides cache reads by the whole billed prompt', () => {
@@ -102,6 +103,19 @@ test('subtractUsage measures one turn and rejects a backwards sample', () => {
   assert.equal(subtractUsage({ uncachedInputTokens: 1 }, { uncachedInputTokens: 5 }), undefined);
 });
 
+test('usageOfTurn sums every assistant step of the same turn', () => {
+  const nodes = [
+    { kind: 'assistant', turn: 7, usage: { inputTokens: 1000, cacheReadTokens: 9000, cacheWriteTokens: 100, outputTokens: 50 } },
+    { kind: 'assistant', turn: 7, usage: { inputTokens: 2000, cacheReadTokens: 18000, cacheWriteTokens: 0, outputTokens: 70 } },
+    { kind: 'assistant', turn: 8, usage: { inputTokens: 9999, cacheReadTokens: 0, outputTokens: 1 } },
+    { kind: 'user', turn: 7 },
+  ];
+  assert.deepEqual(usageOfTurn(nodes, 7), {
+    uncachedInputTokens: 3000, outputTokens: 120, cacheReadTokens: 27000, cacheWriteTokens: 100,
+  });
+  assert.equal(usageOfTurn(nodes, 9), undefined);
+});
+
 test('classify uses the 90/80 cut points', () => {
   assert.equal(classify(0.9), 'ok');
   assert.equal(classify(0.95), 'ok');
@@ -153,6 +167,17 @@ test('formatters stay readable', () => {
   assert.equal(formatSeconds(5260), '5.26s');
   assert.equal(formatSeconds(397), '0.40s');
   assert.equal(formatSeconds(undefined), '—');
+  assert.equal(formatDuration(13090), '13.09s');
+  assert.equal(formatDuration(953000), '15分53秒');
+  assert.equal(formatDuration(undefined), '—');
+});
+
+test('turnDurationMs measures the whole user turn, not one step', () => {
+  assert.equal(turnDurationMs({ startTime: 1000, endTime: 954000 }), 953000);
+  assert.equal(turnDurationMs({ startTime: 1000, endTime: 954000 }, 2000000), 953000);
+  assert.equal(turnDurationMs({ startTime: 1000 }, 61000), 60000);
+  assert.equal(turnDurationMs({ endTime: 954000 }), undefined);
+  assert.equal(turnDurationMs({ startTime: 2000, endTime: 1000 }), undefined);
 });
 
 test('modelNameOf reads the common selection shapes', () => {
@@ -211,4 +236,34 @@ test('a settled assistant after a retry is not an error', () => {
   assert.equal(tailError(snapshot), undefined);
   assert.equal(errorLabel({ kind: 'model-retry', retryState: 'scheduled', failure: { message: 'x' } }), '模型请求失败，重试中');
   assert.equal(errorDetail({ kind: 'model-retry', retryState: 'scheduled', failure: { message: 'x' } }), 'x');
+});
+
+test('assistantStreamFirstTokenTime finds the first real token in chunk records', () => {
+  const stream = [
+    { type: 'chunk', time: 1000, chunk: { type: 'text-delta', text: '' } },
+    { type: 'chunk', time: 1200, chunk: { type: 'reasoning-delta', text: 'think' } },
+    { type: 'chunk', time: 1400, chunk: { type: 'text-delta', text: 'hello' } },
+  ];
+  assert.equal(isTokenDelta({ type: 'text-delta', text: '' }), false);
+  assert.equal(isTokenDelta({ type: 'text-delta', text: 'x' }), true);
+  assert.equal(isTokenDelta({ type: 'tool-call-delta', argumentsDelta: '', name: undefined }), false);
+  assert.equal(assistantStreamFirstTokenTime(stream), 1200);
+  assert.equal(assistantStreamFirstTokenTime([]), undefined);
+  assert.equal(assistantStreamFirstTokenTime(undefined), undefined);
+});
+
+test('assistantStreamFirstTokenTime expands packed text and tool-call runs', () => {
+  const textRun = [
+    { type: 'text-chunks', time0: 2000, dt: [100, 200], texts: ['', 'hello', ''] },
+  ];
+  assert.equal(runFirstTokenTime(textRun[0]), 2100);
+  assert.equal(assistantStreamFirstTokenTime(textRun), 2100);
+  const toolRun = [
+    { type: 'tool-call-chunks', time0: 3000, dt: [50], args: ['', '{"q":1}'] },
+  ];
+  assert.equal(assistantStreamFirstTokenTime(toolRun), 3050);
+  const namedToolRun = [
+    { type: 'tool-call-chunks', time0: 4000, dt: [50], args: ['', ''], name: 'search' },
+  ];
+  assert.equal(assistantStreamFirstTokenTime(namedToolRun), 4000);
 });

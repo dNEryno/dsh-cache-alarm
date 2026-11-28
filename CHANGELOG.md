@@ -1,8 +1,15 @@
 # 更新日志
 
+## 0.2.8 — 2026-11-27
+
+- **修复启动崩溃（致命）**：本插件以 `immediately: true` 静态加载，不走 client runner 的优先级改写，`retireOccupant` 用默认 `priority: 0` 注册 `activity`/`usage`，与内置 ui-chat 同 id 同优先级撞车，导致整机 boot 失败（`list slot "conversation.composer.dock" already has an entry with id "activity" at priority 0`）。改为显式传入严格负的 `priority`（从 `-1000` 递减）才能真正压过内置格子。退役 `activity`/`usage` 的产品意图不变。
+- **悬停明细改为自绘浮窗**：不再使用原生 `title`。原生 tooltip 在合成器每 250ms 刷新时（整轮耗时、tok/s 在变）会被 Chromium 收起并重新计时，表现为一直闪、看不清。现在改用 `position: fixed` 的 React 浮窗，位置在 `mouseenter` 时按锚点算一次，之后数字原地刷新、不抢 hover，也不再被系统 tooltip 延迟拖慢。
+
 ## 0.2.7 — 2026-11-25
 
-- **修复「首字」经常显示 `—`**：当某条回复自身的计时里没有首 token 时间戳时，先回退到同一轮里其它步骤记录的最早首 token（标「约」），仍没有则回退到会话级平均首字（标「均」）；不再因为最后一步缺少边界就永远显示横杠。
+- **修复「首字」显示不合逻辑**：改为从 Session 的原始事件流里按 step 读取真实首 token 时间（`step/start` → 首个 text/reasoning/tool-call delta），因此显示的是这一轮/这一步自己的首字，不再拿会话平均值冒充；当原始事件流与节点计时都没有首 token 时才显示 `—`。
+- **四值行的第三项改为「整轮」耗时**：从 `turnTimings.startTime` 到 `endTime`，显示用户按回车到本轮完成的总时长（超过 1 分钟用「15分53秒」），不再只显示单个 step 的解码时长；本 step 的解码时长与 TPS 仍在悬停明细里。
+- **命中率改为整轮合计**：把该轮所有 assistant step 的 `uncachedInputTokens/cacheReadTokens/cacheWriteTokens/outputTokens` 分别求和，再算 `cacheRead / (uncached + read + write)`；不再只取最后一条助手消息的单步命中率。
 
 ## 0.2.6 — 2026-11-25
 

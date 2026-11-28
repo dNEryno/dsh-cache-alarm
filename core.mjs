@@ -141,11 +141,47 @@ function formatTps(value) {
   return (value >= 100 ? Math.round(value) : Math.round(value * 10) / 10) + ' tok/s';
 }
 
-// A loaded window can keep the final assistant message's timing without the
-// token-delta boundary, even when an earlier step of the same turn recorded
-// one. Recover the turn's earliest recorded first token relative to the turn
-// start; this turns the frequent em dash into a real reading. Returns
-// undefined when no assistant node in the turn has a first-token timestamp.
+// The raw Session event stream keeps an attempt's compact stream records, so
+// the exact first-token boundary survives even when the rendered assistant
+// node dropped its timing. These helpers mirror @deepseek-ai/dsh-llm's
+// assistant-stream readers so the client does not depend on that module.
+function isTokenDelta(chunk) {
+  if (!chunk || typeof chunk !== 'object') return false;
+  if (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') return chunk.text !== '';
+  if (chunk.type === 'tool-call-delta') return chunk.argumentsDelta !== '' || chunk.name !== undefined;
+  return false;
+}
+
+function runFirstTokenTime(run) {
+  if (!run || typeof run !== 'object') return undefined;
+  if (run.type === 'tool-call-chunks' && run.name !== undefined) return run.time0;
+  const fragments = run.type === 'tool-call-chunks' ? run.args : run.texts;
+  if (!Array.isArray(fragments) || !Array.isArray(run.dt)) return undefined;
+  let time = run.time0;
+  if (!Number.isFinite(time)) return undefined;
+  for (let index = 0; index < fragments.length; index += 1) {
+    if (index > 0) {
+      const gap = run.dt[index - 1];
+      if (!Number.isFinite(gap)) return undefined;
+      time += gap;
+    }
+    const fragment = fragments[index];
+    if (typeof fragment === 'string' && fragment !== '') return time;
+  }
+  return undefined;
+}
+
+function assistantStreamFirstTokenTime(stream) {
+  if (!Array.isArray(stream)) return undefined;
+  for (const record of stream) {
+    if (!record || typeof record !== 'object') continue;
+    const time = record.type === 'chunk'
+      ? (isTokenDelta(record.chunk) ? record.time : undefined)
+      : runFirstTokenTime(record);
+    if (time !== undefined) return time;
+  }
+  return undefined;
+}
 function turnFirstTokenMs(nodes, turn, turnWindow) {
   if (!Array.isArray(nodes) || turn === undefined) return undefined;
   const turnStart = positive(turnWindow && turnWindow.startTime);
@@ -185,6 +221,33 @@ function withTtft(perf, ttftMs, kind) {
 function formatSeconds(ms) {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '—';
   return (ms / 1000).toFixed(2) + 's';
+}
+
+// Whole-turn duration (user presses Enter -> turn settles), rendered in a
+// human unit. A 15-minute turn must not read as "900.00s".
+function formatDuration(ms) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '—';
+  if (ms >= 3600000) {
+    const hours = Math.floor(ms / 3600000);
+    let minutes = Math.round((ms % 3600000) / 60000);
+    if (minutes === 60) return (hours + 1) + '小时';
+    return hours + '小时' + minutes + '分';
+  }
+  if (ms >= 60000) {
+    const minutes = Math.floor(ms / 60000);
+    let seconds = Math.round((ms % 60000) / 1000);
+    if (seconds === 60) return (minutes + 1) + '分';
+    return minutes + '分' + seconds + '秒';
+  }
+  return (ms / 1000).toFixed(2) + 's';
+}
+
+function turnDurationMs(turnWindow, now) {
+  const start = positive(turnWindow && turnWindow.startTime);
+  if (start === undefined) return undefined;
+  const end = positive(turnWindow && turnWindow.endTime) ?? positive(now);
+  if (end === undefined || end < start) return undefined;
+  return end - start;
 }
 
 // A failed or stopped turn publishes either a TurnErrorNode or an
@@ -259,6 +322,20 @@ function sumUsage(list) {
   return total;
 }
 
+// A turn can contain several assistant steps (tool calls, retries, ...).
+// "命中" is defined per user turn, so combine every durable step's usage
+// instead of grading only the last assistant message.
+function usageOfTurn(nodes, turn) {
+  if (!Array.isArray(nodes) || turn === undefined) return undefined;
+  const list = [];
+  for (const node of nodes) {
+    if (!node || node.kind !== 'assistant' || node.turn !== turn) continue;
+    const usage = normalizeTurnUsage(node.usage);
+    if (usage) list.push(usage);
+  }
+  return list.length > 0 ? sumUsage(list) : undefined;
+}
+
 function subtractUsage(after, before) {
   const diff = {
     uncachedInputTokens: count(after?.uncachedInputTokens) - count(before?.uncachedInputTokens),
@@ -321,8 +398,10 @@ function formatUsd(usd) {
 
 export const core = {
   PRICES, isPeakTime, priceFamily, modelNameOf, normalizeUsage, normalizeTurnUsage, hitRate,
-  throughput, formatTps, formatSeconds, turnFirstTokenMs, averageTtftMs, withTtft,
-  sumUsage, subtractUsage, classify, wastedUsd, isEvidence,
+  throughput, formatTps, formatSeconds, formatDuration, turnDurationMs,
+  turnFirstTokenMs, averageTtftMs, withTtft,
+  isTokenDelta, runFirstTokenTime, assistantStreamFirstTokenTime,
+  sumUsage, subtractUsage, classify, wastedUsd, isEvidence, usageOfTurn,
   formatTokens, formatRate, formatUsd, unwrap,
   isInterrupted, errorForTurn, tailError, errorLabel, errorDetail,
 };
